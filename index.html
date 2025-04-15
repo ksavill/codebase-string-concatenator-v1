@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Repo File Concatenator - Dark Mode</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #121212;
+      color: #e0e0e0;
+    }
+    h1, h2 {
+      color: #f1f1f1;
+    }
+    .repo-management,
+    .file-section,
+    .selected-files-section,
+    .output-section {
+      margin-bottom: 20px;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 15px;
+      background-color: #1e1e1e;
+    }
+    .repo-management input {
+      margin-right: 10px;
+      padding: 5px;
+      background-color: #333;
+      color: #e0e0e0;
+      border: 1px solid #555;
+      border-radius: 3px;
+    }
+    #repoList, #fileTree, #selectedFiles {
+      list-style-type: none;
+      padding: 0;
+    }
+    #repoList li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 5px;
+      border-bottom: 1px solid #333;
+    }
+    .repo-management li:last-child,
+    .file-section li:last-child,
+    .selected-files-section li:last-child {
+      border-bottom: none;
+    }
+    .file-item {
+      display: flex;
+      align-items: center;
+      padding: 5px;
+    }
+    .file-checkbox {
+      margin-right: 10px;
+    }
+    .folder {
+      font-weight: bold;
+      cursor: pointer;
+      user-select: none;
+    }
+    .folder::before {
+      content: "📁 ";
+    }
+    .folder.open::before {
+      content: "📂 ";
+    }
+    .file::before {
+      content: "📄 ";
+    }
+    #fileTree ul, #selectedFiles ul {
+      padding-left: 20px;
+      list-style-type: none;
+    }
+    #output {
+      width: 100%;
+      height: 200px;
+      font-family: monospace;
+      background-color: #222;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 10px;
+      resize: vertical;
+      color: #e0e0e0;
+    }
+    button {
+      padding: 8px 12px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 10px;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #777;
+      cursor: not-allowed;
+    }
+    .secondary {
+      background-color: #2196F3;
+    }
+    .secondary:hover {
+      background-color: #0b7dda;
+    }
+    .danger {
+      background-color: #f44336;
+    }
+    .danger:hover {
+      background-color: #d32f2f;
+    }
+  </style>
+</head>
+<body>
+  <h1>Repo File Concatenator for LLM Context</h1>
+
+  <div class="repo-management">
+    <h2>Repositories</h2>
+    <input type="text" id="repoName" placeholder="Repository Name" />
+    <input type="text" id="repoUrl" placeholder="Repository URL" />
+    <button id="addRepoBtn">Add Repository</button>
+    <ul id="repoList"></ul>
+  </div>
+
+  <div class="file-section">
+    <h2>File Tree</h2>
+    <select id="repoSelect"></select>
+    <button id="loadTreeBtn">Load File Tree</button>
+
+    <!-- NEW: Button to auto-select non-ignored files -->
+    <button id="autoSelectNonIgnoredBtn" disabled>Auto-Select Non-Ignored</button>
+
+    <ul id="fileTree"></ul>
+  </div>
+
+  <div class="selected-files-section">
+    <h2>Selected Files</h2>
+    <ul id="selectedFiles"></ul>
+  </div>
+
+  <div class="output-section">
+    <h2>Output</h2>
+
+    <!-- NEW: Button for calculating tokens -->
+    <button id="calcTokensBtn" disabled>Calculate Tokens</button>
+
+    <button id="generateBtn" disabled>Generate Concatenated Output</button>
+    <button id="copyBtn" class="secondary" disabled>Copy to Clipboard</button>
+
+    <!-- NEW: Show token count result here -->
+    <div id="tokenCountResult" style="margin-top:10px; margin-bottom:10px;"></div>
+
+    <textarea id="output" readonly></textarea>
+  </div>
+
+  <script>
+    // Global state
+    let repositories = [];
+    let selectedRepo = null;
+    let selectedFiles = new Set();
+    // NEW: Keep a map from filePath => checkbox element, so we can check/uncheck them programmatically
+    const fileCheckboxes = {};
+
+    // DOM elements
+    const repoNameInput = document.getElementById('repoName');
+    const repoUrlInput = document.getElementById('repoUrl');
+    const repoListElem = document.getElementById('repoList');
+    const repoSelectElem = document.getElementById('repoSelect');
+    const fileTreeElem = document.getElementById('fileTree');
+    const selectedFilesElem = document.getElementById('selectedFiles');
+    const outputElem = document.getElementById('output');
+    const addRepoBtn = document.getElementById('addRepoBtn');
+    const loadTreeBtn = document.getElementById('loadTreeBtn');
+    const generateBtn = document.getElementById('generateBtn');
+    const copyBtn = document.getElementById('copyBtn');
+
+    // NEW:
+    const autoSelectNonIgnoredBtn = document.getElementById('autoSelectNonIgnoredBtn');
+    const calcTokensBtn = document.getElementById('calcTokensBtn');
+    const tokenCountResultElem = document.getElementById('tokenCountResult');
+
+    // Event listeners
+    addRepoBtn.addEventListener('click', addRepository);
+    loadTreeBtn.addEventListener('click', loadFileTree);
+    generateBtn.addEventListener('click', generateOutput);
+    copyBtn.addEventListener('click', copyToClipboard);
+
+    // NEW event listeners:
+    autoSelectNonIgnoredBtn.addEventListener('click', autoSelectNonIgnoredFiles);
+    calcTokensBtn.addEventListener('click', calculateTokens);
+
+    async function fetchRepositories() {
+      try {
+        const response = await fetch('/repos');
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        const data = await response.json();
+        repositories = data.repositories;
+        updateRepoUI();
+      } catch (err) {
+        console.error('Error fetching repositories:', err);
+        outputElem.value = `Error fetching repositories: ${err.message}`;
+      }
+    }
+
+    function updateRepoUI() {
+      repoListElem.innerHTML = '';
+      repositories.forEach(repo => {
+        const li = document.createElement('li');
+        li.textContent = repo;
+        const pullBtn = document.createElement('button');
+        pullBtn.textContent = 'Pull';
+        pullBtn.classList.add('secondary');
+        pullBtn.addEventListener('click', () => pullRepository(repo));
+        const removeBtn = document.createElement('button');
+        removeBtn.textContent = 'Remove';
+        removeBtn.classList.add('danger');
+        removeBtn.addEventListener('click', () => removeRepository(repo));
+        li.appendChild(pullBtn);
+        li.appendChild(removeBtn);
+        repoListElem.appendChild(li);
+      });
+
+      repoSelectElem.innerHTML = '<option value="">Select a repository</option>';
+      repositories.forEach(repo => {
+        const option = document.createElement('option');
+        option.value = repo;
+        option.textContent = repo;
+        repoSelectElem.appendChild(option);
+      });
+    }
+
+    async function addRepository() {
+      const name = repoNameInput.value.trim();
+      const url = repoUrlInput.value.trim();
+      if (!name || !url) {
+        outputElem.value = 'Please provide both repository name and URL.';
+        return;
+      }
+      try {
+        const response = await fetch('/repos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, url })
+        });
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        repoNameInput.value = '';
+        repoUrlInput.value = '';
+        await fetchRepositories();
+        outputElem.value = `Repository '${name}' added successfully.`;
+      } catch (err) {
+        console.error('Error adding repository:', err);
+        outputElem.value = `Error adding repository: ${err.message}`;
+      }
+    }
+
+    async function pullRepository(repoName) {
+      try {
+        const response = await fetch(`/repos/${repoName}/pull`, {
+          method: 'POST'
+        });
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        outputElem.value = `Repository '${repoName}' pulled successfully.`;
+      } catch (err) {
+        console.error('Error pulling repository:', err);
+        outputElem.value = `Error pulling repository: ${err.message}`;
+      }
+    }
+
+    async function removeRepository(repoName) {
+      try {
+        const response = await fetch(`/repos/${repoName}`, {
+          method: 'DELETE'
+        });
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        await fetchRepositories();
+        if (selectedRepo === repoName) {
+          selectedRepo = null;
+          fileTreeElem.innerHTML = '';
+          selectedFiles.clear();
+          fileCheckboxesClear();
+        }
+        outputElem.value = `Repository '${repoName}' removed successfully.`;
+      } catch (err) {
+        console.error('Error removing repository:', err);
+        outputElem.value = `Error removing repository: ${err.message}`;
+      }
+    }
+
+    async function loadFileTree() {
+      selectedRepo = repoSelectElem.value;
+      if (!selectedRepo) {
+        outputElem.value = 'Please select a repository.';
+        return;
+      }
+      try {
+        const response = await fetch(`/repos/${selectedRepo}/tree`);
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        const tree = await response.json();
+
+        selectedFiles.clear();
+        // Clear out existing UI
+        fileTreeElem.innerHTML = '';
+        fileCheckboxesClear();
+        // Render the tree
+        renderFileTree(tree, fileTreeElem, '', true);
+        updateSelectedFilesList();
+
+        // Enable "Auto-Select Non-Ignored" button
+        autoSelectNonIgnoredBtn.disabled = false;
+
+        outputElem.value = '';
+      } catch (err) {
+        console.error('Error loading file tree:', err);
+        outputElem.value = `Error loading file tree: ${err.message}`;
+      }
+    }
+
+    function fileCheckboxesClear() {
+      for (const key in fileCheckboxes) {
+        delete fileCheckboxes[key];
+      }
+    }
+
+    function renderFileTree(node, parentElem, currentPath = '', isRoot = false) {
+      const li = document.createElement('li');
+      if (node.children) {
+        // It's a folder
+        const folderElem = document.createElement('div');
+        folderElem.classList.add('folder');
+        folderElem.textContent = node.name;
+        li.appendChild(folderElem);
+
+        const childrenUl = document.createElement('ul');
+        childrenUl.style.display = 'none';
+        li.appendChild(childrenUl);
+
+        folderElem.addEventListener('click', () => {
+          if (folderElem.classList.contains('open')) {
+            folderElem.classList.remove('open');
+            childrenUl.style.display = 'none';
+          } else {
+            folderElem.classList.add('open');
+            childrenUl.style.display = 'block';
+          }
+        });
+
+        // If this is the top-level folder (i.e. the repository root),
+        // do not add its name to the file path.
+        const newPath = isRoot ? '' : currentPath + node.name + '/';
+        node.children.forEach(child => renderFileTree(child, childrenUl, newPath, false));
+
+      } else {
+        // It's a file
+        const fileDiv = document.createElement('div');
+        fileDiv.classList.add('file-item');
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.classList.add('file-checkbox');
+
+        const fileLabel = document.createElement('div');
+        fileLabel.classList.add('file');
+        fileLabel.textContent = node.name;
+
+        fileDiv.appendChild(checkbox);
+        fileDiv.appendChild(fileLabel);
+        li.appendChild(fileDiv);
+
+        const filePath = currentPath + node.name;
+        // Store in our global dictionary
+        fileCheckboxes[filePath] = checkbox;
+
+        checkbox.addEventListener('change', () => {
+          if (checkbox.checked) {
+            selectedFiles.add(filePath);
+          } else {
+            selectedFiles.delete(filePath);
+          }
+          updateSelectedFilesList();
+          updateButtons();
+        });
+        fileLabel.addEventListener('click', () => {
+          checkbox.checked = !checkbox.checked;
+          if (checkbox.checked) {
+            selectedFiles.add(filePath);
+          } else {
+            selectedFiles.delete(filePath);
+          }
+          updateSelectedFilesList();
+          updateButtons();
+        });
+      }
+      parentElem.appendChild(li);
+    }
+
+    function updateSelectedFilesList() {
+      selectedFilesElem.innerHTML = '';
+      if (selectedFiles.size === 0) {
+        const li = document.createElement('li');
+        li.textContent = 'No files selected';
+        selectedFilesElem.appendChild(li);
+      } else {
+        selectedFiles.forEach(filePath => {
+          const li = document.createElement('li');
+          li.textContent = filePath;
+          selectedFilesElem.appendChild(li);
+        });
+      }
+      updateButtons();
+    }
+
+    async function generateOutput() {
+      if (!selectedRepo || selectedFiles.size === 0) {
+        outputElem.value = 'Please select a repository and at least one file.';
+        return;
+      }
+      try {
+        const response = await fetch(`/repos/${selectedRepo}/dump`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: Array.from(selectedFiles) })
+        });
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        const data = await response.json();
+        outputElem.value = data.concatenated;
+        copyBtn.disabled = false;
+      } catch (err) {
+        console.error('Error generating output:', err);
+        outputElem.value = `Error generating output: ${err.message}`;
+      }
+    }
+
+    async function copyToClipboard() {
+      try {
+        await navigator.clipboard.writeText(outputElem.value);
+        // Show a temporary toaster notification upon success.
+        showToast('Content copied to clipboard successfully!');
+      } catch (err) {
+        console.error('Error copying to clipboard:', err);
+        outputElem.value = `Error copying to clipboard: ${err.message}`;
+      }
+    }
+
+    // NEW: Helper function to show a temporary toaster notification.
+    function showToast(message) {
+      const toast = document.createElement("div");
+      toast.textContent = message;
+      toast.style.position = "fixed";
+      toast.style.bottom = "20px";
+      toast.style.left = "50%";
+      toast.style.transform = "translateX(-50%)";
+      toast.style.backgroundColor = "#4CAF50";
+      toast.style.color = "#fff";
+      toast.style.padding = "12px 24px";
+      toast.style.borderRadius = "5px";
+      toast.style.boxShadow = "0px 2px 10px rgba(0, 0, 0, 0.3)";
+      toast.style.zIndex = "1000";
+      document.body.appendChild(toast);
+      setTimeout(() => {
+        toast.style.transition = "opacity 0.5s ease";
+        toast.style.opacity = "0";
+        setTimeout(() => {
+          document.body.removeChild(toast);
+        }, 500);
+      }, 2000);
+    }
+
+    // NEW: Call the tokens endpoint
+    async function calculateTokens() {
+      if (!selectedRepo || selectedFiles.size === 0) {
+        outputElem.value = 'Please select a repository and at least one file before calculating tokens.';
+        return;
+      }
+      try {
+        const response = await fetch(`/repos/${selectedRepo}/tokens`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: Array.from(selectedFiles) })
+        });
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+
+        const data = await response.json();
+        const totalTokens = data.total_tokens;
+        tokenCountResultElem.textContent = `Total tokens: ${totalTokens}`;
+      } catch (err) {
+        console.error('Error calculating tokens:', err);
+        outputElem.value = `Error calculating tokens: ${err.message}`;
+      }
+    }
+
+    // NEW: Auto-select files not ignored by .gitignore
+    async function autoSelectNonIgnoredFiles() {
+      if (!selectedRepo) {
+        outputElem.value = 'Please select a repository first.';
+        return;
+      }
+      try {
+        const response = await fetch(`/repos/${selectedRepo}/non_ignored_files`);
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+
+        const data = await response.json();
+        const fileList = data.files; // array of strings
+        // For each file, if we have a checkbox in the file tree, check it
+        fileList.forEach(path => {
+          if (fileCheckboxes[path]) {
+            fileCheckboxes[path].checked = true;
+            selectedFiles.add(path);
+          }
+        });
+
+        updateSelectedFilesList();
+      } catch (err) {
+        console.error('Error auto-selecting non-ignored files:', err);
+        outputElem.value = `Error auto-selecting non-ignored files: ${err.message}`;
+      }
+    }
+
+    function updateButtons() {
+      // Enable/disable 'Generate' or 'Tokens' based on whether we have selected files
+      generateBtn.disabled = selectedFiles.size === 0;
+      calcTokensBtn.disabled = selectedFiles.size === 0;
+    }
+
+    // Initial setup
+    fetchRepositories();
+    updateButtons();
+  </script>
+</body>
+</html>

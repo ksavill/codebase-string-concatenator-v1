@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "32546:32546"
+    volumes:
+      - ./repos_reference:/app/repos_reference
