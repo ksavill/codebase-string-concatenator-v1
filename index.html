@@ -27,7 +27,8 @@
       padding: 15px;
       background-color: #1e1e1e;
     }
-    .repo-management input {
+    .repo-management input,
+    .repo-management select {
       margin-right: 10px;
       padding: 5px;
       background-color: #333;
@@ -123,8 +124,13 @@
 
   <div class="repo-management">
     <h2>Repositories</h2>
-    <input type="text" id="repoName" placeholder="Repository Name" />
-    <input type="text" id="repoUrl" placeholder="Repository URL" />
+    <!-- New: Repository Type -->
+    <select id="repoType">
+      <option value="git">Git Repository</option>
+      <option value="local">Local Directory</option>
+    </select>
+    <input type="text" id="repoName" placeholder="Repository/Directory Name" />
+    <input type="text" id="repoUrl" placeholder="Git URL or Local Path" />
     <button id="addRepoBtn">Add Repository</button>
     <ul id="repoList"></ul>
   </div>
@@ -165,10 +171,11 @@
     let repositories = [];
     let selectedRepo = null;
     let selectedFiles = new Set();
-    // NEW: Keep a map from filePath => checkbox element, so we can check/uncheck them programmatically
+    // NEW: Keep a map from filePath => checkbox element.
     const fileCheckboxes = {};
 
     // DOM elements
+    const repoTypeSelect = document.getElementById('repoType');
     const repoNameInput = document.getElementById('repoName');
     const repoUrlInput = document.getElementById('repoUrl');
     const repoListElem = document.getElementById('repoList');
@@ -180,19 +187,16 @@
     const loadTreeBtn = document.getElementById('loadTreeBtn');
     const generateBtn = document.getElementById('generateBtn');
     const copyBtn = document.getElementById('copyBtn');
-
-    // NEW:
     const autoSelectNonIgnoredBtn = document.getElementById('autoSelectNonIgnoredBtn');
     const calcTokensBtn = document.getElementById('calcTokensBtn');
     const tokenCountResultElem = document.getElementById('tokenCountResult');
 
     // Event listeners
+    repoSelectElem.addEventListener('change', loadFileTree);
     addRepoBtn.addEventListener('click', addRepository);
     loadTreeBtn.addEventListener('click', loadFileTree);
     generateBtn.addEventListener('click', generateOutput);
     copyBtn.addEventListener('click', copyToClipboard);
-
-    // NEW event listeners:
     autoSelectNonIgnoredBtn.addEventListener('click', autoSelectNonIgnoredFiles);
     calcTokensBtn.addEventListener('click', calculateTokens);
 
@@ -214,20 +218,24 @@
       repositories.forEach(repo => {
         const li = document.createElement('li');
         li.textContent = repo;
+        // "Pull" doesn't apply well to local directories if they don't have .git
+        // We'll still display a Pull button, but it might return a message if .git isn't found.
         const pullBtn = document.createElement('button');
         pullBtn.textContent = 'Pull';
         pullBtn.classList.add('secondary');
         pullBtn.addEventListener('click', () => pullRepository(repo));
+
         const removeBtn = document.createElement('button');
         removeBtn.textContent = 'Remove';
         removeBtn.classList.add('danger');
         removeBtn.addEventListener('click', () => removeRepository(repo));
+
         li.appendChild(pullBtn);
         li.appendChild(removeBtn);
         repoListElem.appendChild(li);
       });
 
-      repoSelectElem.innerHTML = '<option value="">Select a repository</option>';
+      repoSelectElem.innerHTML = '<option value="">Select a repository/directory</option>';
       repositories.forEach(repo => {
         const option = document.createElement('option');
         option.value = repo;
@@ -239,24 +247,31 @@
     async function addRepository() {
       const name = repoNameInput.value.trim();
       const url = repoUrlInput.value.trim();
+      const repoType = repoTypeSelect.value;
+
       if (!name || !url) {
-        outputElem.value = 'Please provide both repository name and URL.';
+        outputElem.value = 'Please provide both a name and a path/URL.';
         return;
       }
+
       try {
         const response = await fetch('/repos', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, url })
+          body: JSON.stringify({ name, url, repo_type: repoType })
         });
-        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || `HTTP error: ${response.status}`);
+        }
+        // Clear inputs
         repoNameInput.value = '';
         repoUrlInput.value = '';
         await fetchRepositories();
-        outputElem.value = `Repository '${name}' added successfully.`;
+        outputElem.value = `Repository/Directory '${name}' added successfully.`;
       } catch (err) {
-        console.error('Error adding repository:', err);
-        outputElem.value = `Error adding repository: ${err.message}`;
+        console.error('Error adding repository/directory:', err);
+        outputElem.value = `Error adding repository/directory: ${err.message}`;
       }
     }
 
@@ -265,8 +280,11 @@
         const response = await fetch(`/repos/${repoName}/pull`, {
           method: 'POST'
         });
-        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-        outputElem.value = `Repository '${repoName}' pulled successfully.`;
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || `HTTP error: ${response.status}`);
+        }
+        outputElem.value = `Pull operation result for '${repoName}': ${await response.text()}`;
       } catch (err) {
         console.error('Error pulling repository:', err);
         outputElem.value = `Error pulling repository: ${err.message}`;
@@ -278,7 +296,10 @@
         const response = await fetch(`/repos/${repoName}`, {
           method: 'DELETE'
         });
-        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || `HTTP error: ${response.status}`);
+        }
         await fetchRepositories();
         if (selectedRepo === repoName) {
           selectedRepo = null;
@@ -286,17 +307,17 @@
           selectedFiles.clear();
           fileCheckboxesClear();
         }
-        outputElem.value = `Repository '${repoName}' removed successfully.`;
+        outputElem.value = `Repository/Directory '${repoName}' removed successfully.`;
       } catch (err) {
-        console.error('Error removing repository:', err);
-        outputElem.value = `Error removing repository: ${err.message}`;
+        console.error('Error removing repository/directory:', err);
+        outputElem.value = `Error removing repository/directory: ${err.message}`;
       }
     }
 
     async function loadFileTree() {
       selectedRepo = repoSelectElem.value;
       if (!selectedRepo) {
-        outputElem.value = 'Please select a repository.';
+        outputElem.value = 'Please select a repository/directory.';
         return;
       }
       try {
@@ -305,16 +326,12 @@
         const tree = await response.json();
 
         selectedFiles.clear();
-        // Clear out existing UI
         fileTreeElem.innerHTML = '';
         fileCheckboxesClear();
-        // Render the tree
         renderFileTree(tree, fileTreeElem, '', true);
         updateSelectedFilesList();
 
-        // Enable "Auto-Select Non-Ignored" button
         autoSelectNonIgnoredBtn.disabled = false;
-
         outputElem.value = '';
       } catch (err) {
         console.error('Error loading file tree:', err);
@@ -331,7 +348,6 @@
     function renderFileTree(node, parentElem, currentPath = '', isRoot = false) {
       const li = document.createElement('li');
       if (node.children) {
-        // It's a folder
         const folderElem = document.createElement('div');
         folderElem.classList.add('folder');
         folderElem.textContent = node.name;
@@ -351,13 +367,9 @@
           }
         });
 
-        // If this is the top-level folder (i.e. the repository root),
-        // do not add its name to the file path.
         const newPath = isRoot ? '' : currentPath + node.name + '/';
         node.children.forEach(child => renderFileTree(child, childrenUl, newPath, false));
-
       } else {
-        // It's a file
         const fileDiv = document.createElement('div');
         fileDiv.classList.add('file-item');
 
@@ -374,7 +386,6 @@
         li.appendChild(fileDiv);
 
         const filePath = currentPath + node.name;
-        // Store in our global dictionary
         fileCheckboxes[filePath] = checkbox;
 
         checkbox.addEventListener('change', () => {
@@ -418,7 +429,7 @@
 
     async function generateOutput() {
       if (!selectedRepo || selectedFiles.size === 0) {
-        outputElem.value = 'Please select a repository and at least one file.';
+        outputElem.value = 'Please select a repository/directory and at least one file.';
         return;
       }
       try {
@@ -440,7 +451,6 @@
     async function copyToClipboard() {
       try {
         await navigator.clipboard.writeText(outputElem.value);
-        // Show a temporary toaster notification upon success.
         showToast('Content copied to clipboard successfully!');
       } catch (err) {
         console.error('Error copying to clipboard:', err);
@@ -448,7 +458,6 @@
       }
     }
 
-    // NEW: Helper function to show a temporary toaster notification.
     function showToast(message) {
       const toast = document.createElement("div");
       toast.textContent = message;
@@ -472,10 +481,9 @@
       }, 2000);
     }
 
-    // NEW: Call the tokens endpoint
     async function calculateTokens() {
       if (!selectedRepo || selectedFiles.size === 0) {
-        outputElem.value = 'Please select a repository and at least one file before calculating tokens.';
+        outputElem.value = 'Please select a repository/directory and at least one file before calculating tokens.';
         return;
       }
       try {
@@ -495,10 +503,9 @@
       }
     }
 
-    // NEW: Auto-select files not ignored by .gitignore
     async function autoSelectNonIgnoredFiles() {
       if (!selectedRepo) {
-        outputElem.value = 'Please select a repository first.';
+        outputElem.value = 'Please select a repository/directory first.';
         return;
       }
       try {
@@ -506,15 +513,13 @@
         if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
 
         const data = await response.json();
-        const fileList = data.files; // array of strings
-        // For each file, if we have a checkbox in the file tree, check it
+        const fileList = data.files;
         fileList.forEach(path => {
           if (fileCheckboxes[path]) {
             fileCheckboxes[path].checked = true;
             selectedFiles.add(path);
           }
         });
-
         updateSelectedFilesList();
       } catch (err) {
         console.error('Error auto-selecting non-ignored files:', err);
@@ -523,12 +528,11 @@
     }
 
     function updateButtons() {
-      // Enable/disable 'Generate' or 'Tokens' based on whether we have selected files
       generateBtn.disabled = selectedFiles.size === 0;
       calcTokensBtn.disabled = selectedFiles.size === 0;
     }
 
-    // Initial setup
+    // Initial load
     fetchRepositories();
     updateButtons();
   </script>
