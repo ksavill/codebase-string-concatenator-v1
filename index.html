@@ -124,13 +124,13 @@
 
   <div class="repo-management">
     <h2>Repositories</h2>
-    <!-- New: Repository Type -->
     <select id="repoType">
       <option value="git">Git Repository</option>
       <option value="local">Local Directory</option>
     </select>
     <input type="text" id="repoName" placeholder="Repository/Directory Name" />
     <input type="text" id="repoUrl" placeholder="Git URL or Local Path" />
+    <input type="text" id="repoBranch" placeholder="Branch (git only, optional)" />
     <button id="addRepoBtn">Add Repository</button>
     <ul id="repoList"></ul>
   </div>
@@ -139,10 +139,7 @@
     <h2>File Tree</h2>
     <select id="repoSelect"></select>
     <button id="loadTreeBtn">Load File Tree</button>
-
-    <!-- NEW: Button to auto-select non-ignored files -->
     <button id="autoSelectNonIgnoredBtn" disabled>Auto-Select Non-Ignored</button>
-
     <ul id="fileTree"></ul>
   </div>
 
@@ -153,28 +150,19 @@
 
   <div class="output-section">
     <h2>Output</h2>
-
-    <!-- NEW: Button for calculating tokens -->
     <button id="calcTokensBtn" disabled>Calculate Tokens</button>
-
     <button id="generateBtn" disabled>Generate Concatenated Output</button>
     <button id="copyBtn" class="secondary" disabled>Copy to Clipboard</button>
-
-    <!-- NEW: Show token count result here -->
     <div id="tokenCountResult" style="margin-top:10px; margin-bottom:10px;"></div>
-
     <textarea id="output" readonly></textarea>
   </div>
 
   <script>
-    // Global state
     let repositories = [];
     let selectedRepo = null;
     let selectedFiles = new Set();
-    // NEW: Keep a map from filePath => checkbox element.
     const fileCheckboxes = {};
 
-    // DOM elements
     const repoTypeSelect = document.getElementById('repoType');
     const repoNameInput = document.getElementById('repoName');
     const repoUrlInput = document.getElementById('repoUrl');
@@ -191,7 +179,6 @@
     const calcTokensBtn = document.getElementById('calcTokensBtn');
     const tokenCountResultElem = document.getElementById('tokenCountResult');
 
-    // Event listeners
     repoSelectElem.addEventListener('change', loadFileTree);
     addRepoBtn.addEventListener('click', addRepository);
     loadTreeBtn.addEventListener('click', loadFileTree);
@@ -217,19 +204,15 @@
       repoListElem.innerHTML = '';
       repositories.forEach(repo => {
         const li = document.createElement('li');
-        li.textContent = repo;
-        // "Pull" doesn't apply well to local directories if they don't have .git
-        // We'll still display a Pull button, but it might return a message if .git isn't found.
+        li.textContent = repo.name + (repo.branch && repo.branch !== 'default' ? ` (${repo.branch})` : '');
         const pullBtn = document.createElement('button');
-        pullBtn.textContent = 'Pull';
+        pullBtn.textContent = (repo.repo_type === "local") ? "Refresh" : "Pull";
         pullBtn.classList.add('secondary');
-        pullBtn.addEventListener('click', () => pullRepository(repo));
-
+        pullBtn.addEventListener('click', () => pullRepository(repo.name));
         const removeBtn = document.createElement('button');
         removeBtn.textContent = 'Remove';
         removeBtn.classList.add('danger');
-        removeBtn.addEventListener('click', () => removeRepository(repo));
-
+        removeBtn.addEventListener('click', () => removeRepository(repo.name));
         li.appendChild(pullBtn);
         li.appendChild(removeBtn);
         repoListElem.appendChild(li);
@@ -238,8 +221,8 @@
       repoSelectElem.innerHTML = '<option value="">Select a repository/directory</option>';
       repositories.forEach(repo => {
         const option = document.createElement('option');
-        option.value = repo;
-        option.textContent = repo;
+        option.value = repo.name;
+        option.textContent = repo.name + (repo.branch && repo.branch !== 'default' ? ` (${repo.branch})` : '');
         repoSelectElem.appendChild(option);
       });
     }
@@ -248,23 +231,21 @@
       const name = repoNameInput.value.trim();
       const url = repoUrlInput.value.trim();
       const repoType = repoTypeSelect.value;
-
+      const branch = document.getElementById('repoBranch').value.trim();
       if (!name || !url) {
         outputElem.value = 'Please provide both a name and a path/URL.';
         return;
       }
-
       try {
         const response = await fetch('/repos', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, url, repo_type: repoType })
+          body: JSON.stringify({ name, url, repo_type: repoType, branch })
         });
         if (!response.ok) {
           const errorData = await response.json();
           throw new Error(errorData.detail || `HTTP error: ${response.status}`);
         }
-        // Clear inputs
         repoNameInput.value = '';
         repoUrlInput.value = '';
         await fetchRepositories();
@@ -277,25 +258,23 @@
 
     async function pullRepository(repoName) {
       try {
-        const response = await fetch(`/repos/${repoName}/pull`, {
-          method: 'POST'
-        });
+        const response = await fetch(`/repos/${repoName}/pull`, { method: 'POST' });
         if (!response.ok) {
           const errorData = await response.json();
           throw new Error(errorData.detail || `HTTP error: ${response.status}`);
         }
-        outputElem.value = `Pull operation result for '${repoName}': ${await response.text()}`;
+        const resText = await response.json();
+        outputElem.value = `Operation result for '${repoName}': ${resText.message}` +
+                           (resText.details ? `\nDetails: ${resText.details}` : '');
       } catch (err) {
-        console.error('Error pulling repository:', err);
-        outputElem.value = `Error pulling repository: ${err.message}`;
+        console.error('Error pulling/refreshing repository:', err);
+        outputElem.value = `Error pulling/refreshing repository: ${err.message}`;
       }
     }
 
     async function removeRepository(repoName) {
       try {
-        const response = await fetch(`/repos/${repoName}`, {
-          method: 'DELETE'
-        });
+        const response = await fetch(`/repos/${repoName}`, { method: 'DELETE' });
         if (!response.ok) {
           const errorData = await response.json();
           throw new Error(errorData.detail || `HTTP error: ${response.status}`);
@@ -324,13 +303,11 @@
         const response = await fetch(`/repos/${selectedRepo}/tree`);
         if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
         const tree = await response.json();
-
         selectedFiles.clear();
         fileTreeElem.innerHTML = '';
         fileCheckboxesClear();
         renderFileTree(tree, fileTreeElem, '', true);
         updateSelectedFilesList();
-
         autoSelectNonIgnoredBtn.disabled = false;
         outputElem.value = '';
       } catch (err) {
@@ -352,11 +329,9 @@
         folderElem.classList.add('folder');
         folderElem.textContent = node.name;
         li.appendChild(folderElem);
-
         const childrenUl = document.createElement('ul');
         childrenUl.style.display = 'none';
         li.appendChild(childrenUl);
-
         folderElem.addEventListener('click', () => {
           if (folderElem.classList.contains('open')) {
             folderElem.classList.remove('open');
@@ -366,28 +341,22 @@
             childrenUl.style.display = 'block';
           }
         });
-
         const newPath = isRoot ? '' : currentPath + node.name + '/';
         node.children.forEach(child => renderFileTree(child, childrenUl, newPath, false));
       } else {
         const fileDiv = document.createElement('div');
         fileDiv.classList.add('file-item');
-
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.classList.add('file-checkbox');
-
         const fileLabel = document.createElement('div');
         fileLabel.classList.add('file');
         fileLabel.textContent = node.name;
-
         fileDiv.appendChild(checkbox);
         fileDiv.appendChild(fileLabel);
         li.appendChild(fileDiv);
-
         const filePath = currentPath + node.name;
         fileCheckboxes[filePath] = checkbox;
-
         checkbox.addEventListener('change', () => {
           if (checkbox.checked) {
             selectedFiles.add(filePath);
@@ -493,7 +462,6 @@
           body: JSON.stringify({ files: Array.from(selectedFiles) })
         });
         if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-
         const data = await response.json();
         const totalTokens = data.total_tokens;
         tokenCountResultElem.textContent = `Total tokens: ${totalTokens}`;
@@ -511,7 +479,6 @@
       try {
         const response = await fetch(`/repos/${selectedRepo}/non_ignored_files`);
         if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-
         const data = await response.json();
         const fileList = data.files;
         fileList.forEach(path => {
@@ -532,7 +499,6 @@
       calcTokensBtn.disabled = selectedFiles.size === 0;
     }
 
-    // Initial load
     fetchRepositories();
     updateButtons();
   </script>
