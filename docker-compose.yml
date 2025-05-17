@@ -1,9 +1,15 @@
+# FILE: docker-compose.yml
 version: '3.8'
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: DockerFile.dockerfile # Specify your Dockerfile name
     ports:
       - "32546:32546"
     volumes:
-      - ./repos_reference:/app/repos_reference
+      - ./repos_reference:/app/repos_reference # Persist cloned repos on host
+    environment:
+      - REFERENCE_DIR=/app/repos_reference # Ensure app uses the mounted volume path
+      # - PORT=32546 # Optional: already default in main.py and CMD
